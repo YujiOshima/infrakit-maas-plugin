@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/docker/infrakit/pkg/spi/instance"
+	"github.com/docker/infrakit/pkg/types"
 	maas "github.com/juju/gomaasapi"
 	"net/url"
 )
@@ -30,7 +30,7 @@ type maasPlugin struct {
 }
 
 // Validate performs local validation on a provision request.
-func (m maasPlugin) Validate(req json.RawMessage) error {
+func (m maasPlugin) Validate(req *types.Any) error {
 	return nil
 }
 
@@ -70,7 +70,7 @@ func (m maasPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 	var properties map[string]interface{}
 
 	if spec.Properties != nil {
-		if err := json.Unmarshal(*spec.Properties, &properties); err != nil {
+		if err := spec.Properties.Decode(&properties); err != nil {
 			return nil, fmt.Errorf("Invalid instance properties: %s", err)
 		}
 	}
@@ -143,11 +143,11 @@ func (m maasPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 	if err := ioutil.WriteFile(path.Join(machineDir, "MachineName"), []byte(hostname), 0755); err != nil {
 		return nil, err
 	}
-	tagData, err := json.Marshal(spec.Tags)
+	tagData, err := types.AnyValue(spec.Tags)
 	if err != nil {
 		return nil, err
 	}
-	if err := ioutil.WriteFile(path.Join(machineDir, "tags"), tagData, 0666); err != nil {
+	if err := ioutil.WriteFile(path.Join(machineDir, "tags"), tagData.Bytes(), 0666); err != nil {
 		return nil, err
 	}
 	if spec.LogicalID != nil {
@@ -156,6 +156,32 @@ func (m maasPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 		}
 	}
 	return &id, nil
+}
+
+// Label labels the instance
+func (m maasPlugin) Label(instance instance.ID, labels map[string]string) error {
+	machineDir := path.Join(m.MaasfilesDir, string(instance))
+	tagFile := path.Join(machineDir, "tags")
+	buff, err := ioutil.ReadFile(tagFile)
+	if err != nil {
+		return err
+	}
+
+	tags := map[string]string{}
+	err = types.AnyBytes(buff).Decode(&tags)
+	if err != nil {
+		return err
+	}
+
+	for k, v := range labels {
+		tags[k] = v
+	}
+
+	encoded, err := types.AnyValue(tags)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(tagFile, encoded.Bytes(), 0666)
 }
 
 // Destroy terminates an existing instance.
@@ -229,7 +255,7 @@ func (m maasPlugin) DescribeInstances(tags map[string]string) ([]instance.Descri
 			return nil, err
 		}
 		machineTags := map[string]string{}
-		if err := json.Unmarshal(tagData, &machineTags); err != nil {
+		if err := types.AnyBytes(tagData).Decode(&machineTags); err != nil {
 			return nil, err
 		}
 		allMatched := true
